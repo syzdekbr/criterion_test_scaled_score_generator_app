@@ -3,39 +3,45 @@
 
 library(shiny)
 library(tidyverse)
+options(scipen=999)
 
 # UI ----------------------------------------------------------------------
 
-# Two tabs, one for if raw cut score is known, another if scaling parameters are known
+# Tabs for different methods, depending on if raw cut score is known
 ui <- fluidPage(
 
     # Application title
     titlePanel("Scaling Parameters Calculator"),
+    p("This app will help provide information for scaling and equating. The main sections are:", br(),
+      "1. From Known Raw Cut Score- Scaling equation is generated from input cut score", br(),
+      "2. Chaining Forms with an Unknown Cut Score- Equate new forms to a form with a known cut score", br(),
+      "3. From Known Scaled Score Parameters- Determine the cut score when scaling equations are known
+      "),
     
     tabsetPanel(
     ###*** Raw cut score known
-      tabPanel("From Known Raw Score",
+      tabPanel("From Known Raw Cut Score",
                sidebarLayout(
                  sidebarPanel(
                    h2("Inputs"),
                    numericInput(
                      inputId = "known_raw_score_raw_score",
-                     label = "Raw score",
+                     label = "Raw Cut Score",
                      value = 70
                    ),
                    numericInput(
                      inputId = "known_raw_score_max_raw_score",
-                     label = "Maximum raw score",
+                     label = "Maximum Raw Score",
                      value = 100
                    ),
                    numericInput(
                      inputId = "known_raw_score_scaled_cut_score",
-                     label = "Desired cut score",
+                     label = "Desired Scaled Cut Score",
                      value = 70
                    ),
                    numericInput(
                      inputId = "known_raw_score_max_scaled_score",
-                     label = "Maximum scaled score",
+                     label = "Maximum Scaled Score",
                      value = 100
                    ),
                    # Can input any raw score and will output scaled score for it
@@ -46,12 +52,69 @@ ui <- fluidPage(
                    )
                  ), # End sidebarPanel
                  mainPanel(
+                   br(),
+                   h4("In this section, you can input a cut score and scaling equations will be output. Enter the cut score,
+                     as number correct needed to pass. The maximum scores are number of total items, for both raw and scaled scores."),
                    h2("Outputs"),
                    DT::DTOutput("known_raw_score_parameter_table"),
                    textOutput("known_raw_score_check")
                  )
                ) # end sidebarLayout
               ), # end tabPanel
+      ###*** Chaining form with unknown angoff to previous form
+      tabPanel("Chaining Forms with an Unknown Cut Score",
+               sidebarLayout(
+                 sidebarPanel(
+                   h2("Inputs"),
+                   numericInput(
+                     inputId = "anchor_linear_slope",
+                     label = "Anchor SLOPE1, or Linear Slope",
+                     value = 0
+                   ),
+                   numericInput(
+                     inputId = "anchor_quadratic_slope",
+                     label = "Anchor SLOPE2, or Squared Slope",
+                     value = 0
+                   ),
+                   numericInput(
+                     inputId = "anchor_mean_p_value",
+                     label = "Anchor Mean P-value (as decimal)",
+                     value = .70,
+                     min = 0, max = 1
+                   ),
+                   numericInput(
+                     inputId = "target_mean_p_value",
+                     label = "Target Mean P-value (as decimal)",
+                     value = .70,
+                     min = 0, max = 1
+                   ),
+                   numericInput(
+                     inputId = "anchor_max_raw_score",
+                     label = "Anchor Max Raw Score",
+                     value = 100
+                   ),
+                   numericInput(
+                     inputId = "target_max_raw_score",
+                     label = "Target Max Raw Score",
+                     value = 100
+                   ),
+                   # Can input any raw score and will output scaled score for it
+                   numericInput(
+                     inputId = "target_raw_score_to_check",
+                     label = "Raw score to equate and convert to scaled score to check parameters",
+                     value = 70
+                   )
+                 ), # End sidebarPanel
+                 mainPanel(
+                   br(),
+                   h4("In this section, you can generate a scaling equation for a second form when a scaling equations is known for
+                     some anchor form. Average difficulties (p-values) of the forms must be known and used to equate."),
+                   h2("Outputs"),
+                   DT::DTOutput("chaining_parameter_table"),
+                   textOutput("target_raw_score_check")
+                 )
+               ) # end sidebarLayout
+      ), # end tabPanel
       # Known scaled score parameters
       tabPanel("From Known Scaled Score Parameters",
                sidebarLayout(
@@ -89,6 +152,8 @@ ui <- fluidPage(
                  ),
                  # Output
                  mainPanel(
+                   br(),
+                   h4("In this tab we can get the cut score for a form when scaling equations are known."),
                    h2("Outputs"),
                    radioButtons(
                      inputId = "select_root",
@@ -97,6 +162,7 @@ ui <- fluidPage(
                    ),
                    textOutput("roots"),
                    textOutput("maximum_raw_score"),
+                   p("System will estimate the maximum score from the equations entered. You can use this estimate or your own."),
                    radioButtons(
                      inputId = "max_score_to_use",
                      label = "Use estimated max score or input max score",
@@ -128,10 +194,10 @@ server <- function(input, output, session) {
   
 # Linear systems of equation, solve for parameters
   known_raw_score_parameter_func <- reactive({
-    A <- rbind(c(input$known_raw_score_raw_score^2, input$known_raw_score_raw_score), 
+    raw_scores <- rbind(c(input$known_raw_score_raw_score^2, input$known_raw_score_raw_score), 
                c(input$known_raw_score_max_raw_score^2, input$known_raw_score_max_raw_score))
-    B<- c(input$known_raw_score_scaled_cut_score, input$known_raw_score_max_scaled_score)
-    bind_rows(set_names(solve(A,B), c("Squared Slope", "Linear Slope"))) %>% 
+    scale_scores <- c(input$known_raw_score_scaled_cut_score, input$known_raw_score_max_scaled_score)
+    bind_rows(set_names(solve(raw_scores, scale_scores), c("Squared Slope", "Linear Slope"))) %>% 
       relocate(`Linear Slope`, .before = `Squared Slope`) # Client preferred order
   })
   
@@ -141,7 +207,7 @@ server <- function(input, output, session) {
          input$known_raw_score_max_scaled_score)
   })
   
-# Calculate scaled scores
+# Calculate scaled scores and output
   observeEvent(known_raw_score_triggers(),{
     known_raw_score_dat$parameters <- known_raw_score_parameter_func()
   })
@@ -156,7 +222,7 @@ server <- function(input, output, session) {
                        value = input$known_raw_score_raw_score)
   })
   
-# Calculate scaled score from input raw score
+# Calculate scaled score from input raw score- QC check
   known_scale_score_calculator_func <- reactive({
     (input$known_raw_score_to_check ^ 2) * (known_raw_score_dat$parameters %>% select(`Squared Slope`) %>% pull) +
       input$known_raw_score_to_check * (known_raw_score_dat$parameters %>% select(`Linear Slope`) %>% pull)
@@ -165,7 +231,76 @@ server <- function(input, output, session) {
   output$known_raw_score_check <- renderText({
     paste("Estimated scaled score for given raw cut score using new scaling parameters:", round(known_scale_score_calculator_func(), 0))
   })
+
+# Chaining with unknown Angoff --------------------------------------------
+
+  # Reactive to hold scaled score parameters derived from raw cut score
+  chaining_score_dat <- reactiveValues(
+    parameters = tibble()
+  )
   
+  # Linear systems of equation, solve for parameters
+  target_to_anchor_func <- reactive({
+    if(!is.na(input$target_mean_p_value)){
+      if(input$target_mean_p_value != 0){
+        raw_cut = input$target_mean_p_value*input$target_max_raw_score
+        anchor_raw_cut = input$anchor_mean_p_value * input$anchor_max_raw_score
+        form_2_parameters <- rbind(c(raw_cut^2, raw_cut), 
+                   c(input$target_max_raw_score^2, input$target_max_raw_score))
+        anchor_parameters <- c(anchor_raw_cut, input$anchor_max_raw_score)
+        bind_rows(set_names(solve(form_2_parameters, anchor_parameters), c("SLOPE2", "SLOPE1")))
+      } else{
+        tibble(
+          SLOPE2 = 0,
+          SLOPE1 = 0
+        )
+      }
+    } else{
+      tibble(
+        SLOPE2 = 0,
+        SLOPE1 = 0
+      )
+    }
+  })
+  
+  # Triggers to update for any inputs in calculation of parameters
+  chaining_raw_score_triggers <- reactive({
+    list(input$target_mean_p_value, input$target_max_raw_score, input$anchor_mean_p_value,
+         input$anchor_max_raw_score)
+  })
+  
+  # Calculate scaled scores- yields 4 parameter model
+  observeEvent(chaining_raw_score_triggers(),{
+    chaining_score_dat$parameters <- target_to_anchor_func()
+  })
+  
+  chaining_reactive <- reactive({
+    tibble(
+      SLOPE1 = chaining_score_dat$parameters$SLOPE1 * input$anchor_linear_slope,
+      SLOPE2 = chaining_score_dat$parameters$SLOPE2 * input$anchor_linear_slope +
+        (chaining_score_dat$parameters$SLOPE1^2) * input$anchor_quadratic_slope,
+      SLOPE3 = 2 * chaining_score_dat$parameters$SLOPE1 * 
+        chaining_score_dat$parameters$SLOPE2 * input$anchor_quadratic_slope,
+      SLOPE4 = (chaining_score_dat$parameters$SLOPE2^2) * input$anchor_quadratic_slope
+    )
+  })
+  
+  output$chaining_parameter_table <- DT::renderDT({
+  chaining_reactive()
+  })
+  
+  # Calculate scaled score from input raw score
+  chaining_scale_score_calculator_func <- reactive({
+    (input$target_raw_score_to_check ^ 4) * (chaining_reactive() %>% select(SLOPE4) %>% pull) +
+      (input$target_raw_score_to_check ^ 3) * (chaining_reactive() %>% select(SLOPE3) %>% pull) +
+    (input$target_raw_score_to_check ^ 2) * (chaining_reactive() %>% select(SLOPE2) %>% pull) + 
+      input$target_raw_score_to_check * (chaining_reactive() %>% select(SLOPE1) %>% pull)
+  })
+
+  output$target_raw_score_check <- renderText({
+    paste("Estimated scaled score for given raw cut score using new scaling parameters:", round(chaining_scale_score_calculator_func(), 0))
+  })
+
 # Known Scaled Score Tab --------------------------------------------------
 ###*** Calculates scaled scoring parameters from known parameters for another cut score. Calculates raw cut score, then new parameters.
 ###* Will calculate raw maximum score estimate or allow input of known maximum
