@@ -5,6 +5,41 @@ library(shiny)
 library(tidyverse)
 options(scipen=999)
 
+# dt_func -----------------------------------------------------------------
+
+# Prettify column names
+pretty_columns_func <- function(colnames){
+  tools::toTitleCase(gsub("[_|.]", " ", colnames))
+}
+
+unescape_html <- function(str){ 
+  xml2::xml_text(xml2::read_html(paste0("<x>", str, "</x>"))) 
+}
+
+## Function to print datatables in nice format with buttons to export
+
+dt_func <- function(dat, colnames = "", caption ="", dom = 'Blfrtip', rownames_opt = FALSE, ...) {
+  # Prettify column names 
+  colnames <- case_when(
+    colnames =="" ~ pretty_columns_func(colnames(dat)), 
+    TRUE ~ colnames) 
+  dat %>% 
+    DT::datatable( 
+      extensions = 'Buttons', 
+      colnames = colnames, 
+      caption = caption, 
+      rownames = rownames_opt, 
+      editable = TRUE, 
+      ..., 
+      options = list( 
+        dom = dom, 
+        buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+        lengthMenu = list(c(10, 25, 50, -1), c(10, 25, 50, "All")),
+        scrollX = TRUE
+      ) 
+    ) 
+}
+
 # UI ----------------------------------------------------------------------
 
 # Tabs for different methods, depending on if raw cut score is known
@@ -15,8 +50,9 @@ ui <- fluidPage(
     p("This app will help provide information for scaling and equating. The main sections are:", br(),
       "1. From Known Raw Cut Score- Scaling equation is generated from input cut score", br(),
       "2. Chaining Forms with an Unknown Cut Score- Equate new forms to a form with a known cut score", br(),
-      "3. From Known Scaled Score Parameters- Determine the cut score when scaling equations are known
-      "),
+      "3. From Known Scaled Score Parameters- Determine the cut score when scaling equations are known", br(),
+      "4. Rescaling- Scale scores from one scale to another"
+      ),
     
     tabsetPanel(
     ###*** Raw cut score known
@@ -177,7 +213,42 @@ ui <- fluidPage(
                    textOutput("score_check")
                  ) # End MainPanel
                ) # end sidebarLayout
-              ) # end tabPanel
+              ), # end tabPanel
+      ## Scale from one scale to another
+      tabPanel("Rescaling",
+               sidebarLayout(
+                 sidebarPanel(
+                   
+                   h4("Starting Scale"),
+                   numericInput("starting_scale_min_score", "Starting scale minimum score", 0),
+                   numericInput("starting_scale_max_score", "Starting scale maximum score", 0),
+                   numericInput("starting_scale_interval", "Starting scale interval", 0),
+                   
+                   h4("Target Scale"),
+                   numericInput("target_scale_min_score", "Target scale minimum score", 0),
+                   numericInput("target_scale_max_score", "Target scale maximum score", 0),
+                   numericInput("target_scale_interval", "Target scale interval", 0),
+                   textOutput("target_scale_validation_check"),
+                   
+                   h4("Scale score to convert"),
+                   numericInput("scale_score_to_convert", "Starting scale score to convert", 0)
+                 ),
+                 mainPanel(
+                   br(),
+                   h4("In this tab, we can rescale one or many scores from one scale to another. 
+                      Enter scale information and results will show below."),
+                   h2("Results"),
+                   h3("Target score to convert"),
+                   
+                   DT::dataTableOutput("starting_target_results"),
+                   hr(),
+                   br(),
+                   
+                   h3("Conversion table"),
+                   DT::dataTableOutput("scaled_score_conversion_table")
+                 )
+               )
+              )
     ) # End tabsetPanel
 ) # end UI
 
@@ -385,7 +456,124 @@ server <- function(input, output, session) {
   output$score_check <- renderText({
     paste("Estimated raw score for target scaled score using new scaling parameters:", dat$estimated_cut_score)
   })
+  
+
+# Rescaling -----------------------------------------------
+
+  ## Check that all inputs for scale conversion are valid
+validation_check_function <- function(min_score, max_score, interval, scale){
+  
+  if(min_score < 0 | max_score <= 0 | interval <= 0){
+    validate(paste(scale, "min inputs must be non-negative and others positive"))
+  }
+  if(min_score%%1 != 0 | max_score%%1 != 0 | interval%%1 !=0){
+    validate(paste(scale, "inputs must be integers"))
+  }
+  if(max_score <= min_score){
+    validate(paste(scale, "minimum score must be less than maximum"))
+  }
+  if(interval > max_score){
+    validate(paste(scale, "interval must not be greater than maximum"))
+  }
 }
+  
+  ## Rescale starting scale score inputs to output scale scores- 1. Calculate what fraction of starting scale input scale is,
+  ## 2. Convert that to the fraction of target scale. 3. Add to minimum of starting scale, 4. Round to desired interval precision
+  scale_score_conversion_func <- function(
+    any_input_value,
+    starting_scale_min_score,
+    starting_scale_max_score,
+    target_scale_min_score,
+    target_scale_max_score,
+    target_scale_interval){
+    
+  # 1. Calculate what fraction of starting scale input scale is
+    fraction_above_min_starting <- 
+      (any_input_value - starting_scale_min_score) / (starting_scale_max_score - starting_scale_min_score)
+    
+  # 2. Convert that to the fraction of target scale.
+    unrounded_above_min_target <- 
+      fraction_above_min_starting * (target_scale_max_score - target_scale_min_score) 
+    
+  # 3. Add to minimum of starting scale
+    round_to_target_interval <- round(unrounded_above_min_target / target_scale_interval, 0) * target_scale_interval
+    
+  # 4. Round to desired interval precision
+    converted_scale_score <- round_to_target_interval + target_scale_min_score 
+    
+  # Output
+    tibble(
+      any_input_value,
+      starting_scale_min_score,
+      starting_scale_max_score,
+      target_scale_min_score,
+      target_scale_max_score,
+      target_scale_interval,
+      converted_scale_score
+    )
+  }
+  
+  ## Output results of one score to convert
+  output$starting_target_results <- DT::renderDataTable({
+  ## Validation checks for all starting and target values
+    pmap(
+      .l = list(
+          min_score = c(input$starting_scale_min_score, input$target_scale_min_score), 
+          max_score = c(input$starting_scale_max_score, input$target_scale_max_score), 
+          interval = c(input$starting_scale_interval, input$target_scale_interval), 
+          scale = c("Starting", "Target")
+      ),
+      .f = validation_check_function
+    )
+    DT::datatable(
+      scale_score_conversion_func(
+        any_input_value = input$scale_score_to_convert,
+        starting_scale_min_score = input$starting_scale_min_score,
+        starting_scale_max_score = input$starting_scale_max_score,
+        target_scale_min_score = input$target_scale_min_score,
+        target_scale_max_score = input$target_scale_max_score,
+        target_scale_interval = input$target_scale_interval
+      ) %>% 
+        rename_with(~tools::toTitleCase(gsub("_", " ", .x))),
+      options = list(dom = 't')
+    )
+  })
+  
+  ## Function to rescale, used to input many scores in following
+  generate_all_target_scaled_scores_table_func <- function(){
+    map_dfr(
+    # Sequences through all valid starting score values to generate target scale score
+      .x = seq(input$starting_scale_min_score, input$starting_scale_max_score, input$starting_scale_interval),
+      .f = ~
+          scale_score_conversion_func(
+            any_input_value = .x,
+            starting_scale_min_score = input$starting_scale_min_score,
+            starting_scale_max_score = input$starting_scale_max_score,
+            target_scale_min_score = input$target_scale_min_score,
+            target_scale_max_score = input$target_scale_max_score,
+            target_scale_interval = input$target_scale_interval
+          ) %>% 
+            select(
+              any_input_value, 
+              converted_scale_score
+            )
+    )
+  }
+  ## All scores output
+  output$scaled_score_conversion_table <- DT::renderDataTable({
+    pmap(
+      .l = list(
+        min_score = c(input$starting_scale_min_score, input$target_scale_min_score), 
+        max_score = c(input$starting_scale_max_score, input$target_scale_max_score), 
+        interval = c(input$starting_scale_interval, input$target_scale_interval), 
+        scale = c("Starting", "Target")
+      ),
+      .f = validation_check_function
+    )
+    dt_func(generate_all_target_scaled_scores_table_func(), caption = "All converted scale score output")
+  })
+  
+} # Close server
 
 # Run the application 
 shinyApp(ui = ui, server = server)
