@@ -71,6 +71,11 @@ ui <- fluidPage(
                      value = 100
                    ),
                    numericInput(
+                     inputId = "known_raw_score_min_raw_score",
+                     label = "Minimum Raw Score",
+                     value = 0
+                   ),
+                   numericInput(
                      inputId = "known_raw_score_scaled_cut_score",
                      label = "Desired Scaled Cut Score",
                      value = 70
@@ -79,6 +84,16 @@ ui <- fluidPage(
                      inputId = "known_raw_score_max_scaled_score",
                      label = "Maximum Scaled Score",
                      value = 100
+                   ),
+                   numericInput(
+                     inputId = "known_raw_score_min_scaled_score",
+                     label = "Minimum Scaled Score",
+                     value = 0
+                   ),
+                   numericInput(
+                     inputId = "known_raw_score_scaled_score_interval",
+                     label = "Scaled Score Interval",
+                     value = 1
                    ),
                    # Can input any raw score and will output scaled score for it
                    numericInput(
@@ -236,7 +251,10 @@ ui <- fluidPage(
                  mainPanel(
                    br(),
                    h4("In this tab, we can rescale one or many scores from one scale to another. 
-                      Enter scale information and results will show below."),
+                      Enter scale information and results will show below.
+                      *NOTE*: This will rescale a form to have the same relative distance from min to cut to max scores as
+                      the starting scale. If you wish to define a custom scaled cut score for the target form, you should use
+                      the Chaining Forms method."),
                    h2("Results"),
                    h3("Target score to convert"),
                    
@@ -265,17 +283,26 @@ server <- function(input, output, session) {
   
 # Linear systems of equation, solve for parameters
   known_raw_score_parameter_func <- reactive({
-    raw_scores <- rbind(c(input$known_raw_score_raw_score^2, input$known_raw_score_raw_score), 
-               c(input$known_raw_score_max_raw_score^2, input$known_raw_score_max_raw_score))
-    scale_scores <- c(input$known_raw_score_scaled_cut_score, input$known_raw_score_max_scaled_score)
+    raw_scores <- rbind(c((input$known_raw_score_raw_score - input$known_raw_score_min_raw_score)^2, 
+                          (input$known_raw_score_raw_score - input$known_raw_score_min_raw_score)), 
+               c((input$known_raw_score_max_raw_score - input$known_raw_score_min_raw_score)^2, 
+                 (input$known_raw_score_max_raw_score - input$known_raw_score_min_raw_score))
+              )
+    scale_scores <- c(input$known_raw_score_scaled_cut_score - input$known_raw_score_min_scaled_score, 
+                      input$known_raw_score_max_scaled_score - input$known_raw_score_min_scaled_score)
     bind_rows(set_names(solve(raw_scores, scale_scores), c("Squared Slope", "Linear Slope"))) %>% 
-      relocate(`Linear Slope`, .before = `Squared Slope`) # Client preferred order
+      relocate(`Linear Slope`, .before = `Squared Slope`) %>%  # Client preferred order
+      mutate(
+        raw_score_adjustment = input$known_raw_score_min_raw_score,
+        scaled_score_adjustment = input$known_raw_score_min_scaled_score,
+        interval = input$known_raw_score_scaled_score_interval)
   })
   
 # Triggers to update for any inputs in calculation of parameters
   known_raw_score_triggers <- reactive({
     list(input$known_raw_score_raw_score, input$known_raw_score_max_raw_score, input$known_raw_score_scaled_cut_score,
-         input$known_raw_score_max_scaled_score)
+         input$known_raw_score_max_scaled_score, input$known_raw_score_min_scaled_score, input$known_raw_score_min_score,
+         input$known_raw_score_scaled_score_interval)
   })
   
 # Calculate scaled scores and output
@@ -293,10 +320,23 @@ server <- function(input, output, session) {
                        value = input$known_raw_score_raw_score)
   })
   
+  ###*** EQUATION TO CALCULATE SCALED SCORE FROM RAW SCORE
+
+  scaled_score_calc_func <- function(raw_score, raw_score_adjustment, squared_slope, linear_slope, scaled_score_adjustment, interval){
+    (trunc(squared_slope * (raw_score - raw_score_adjustment)^2 + linear_slope * (raw_score - raw_score_adjustment) + 
+      scaled_score_adjustment) / interval) * interval 
+  }
+  
 # Calculate scaled score from input raw score- QC check
   known_scale_score_calculator_func <- reactive({
-    (input$known_raw_score_to_check ^ 2) * (known_raw_score_dat$parameters %>% select(`Squared Slope`) %>% pull) +
-      input$known_raw_score_to_check * (known_raw_score_dat$parameters %>% select(`Linear Slope`) %>% pull)
+    scaled_score_calc_func(
+      raw_score = input$known_raw_score_to_check, 
+      raw_score_adjustment = known_raw_score_dat$parameters %>% select(raw_score_adjustment) %>% pull,
+      squared_slope = known_raw_score_dat$parameters %>% select(`Squared Slope`) %>% pull,
+      linear_slope = known_raw_score_dat$parameters %>% select(`Linear Slope`) %>% pull,
+      scaled_score_adjustment = known_raw_score_dat$parameters %>% select(scaled_score_adjustment) %>% pull,
+      interval = known_raw_score_dat$parameters %>% select(interval) %>% pull
+      )
   })
   
   output$known_raw_score_check <- renderText({
